@@ -186,8 +186,7 @@ export class AnimaceGeneric implements AnimaceImplementation {
     const { token, timestamp } = generateChapterToken();
 
     const queryString =
-      `manga_id=${numericId}&offset=0&limit=500&order=DESC` +
-      `&_t=${token}&_ts=${timestamp}`;
+      `manga_id=${numericId}&offset=0&limit=500&order=DESC` + `&_t=${token}&_ts=${timestamp}`;
 
     const request: Request = {
       url: `${this.domain}/auth/manga-chapters?${queryString}`,
