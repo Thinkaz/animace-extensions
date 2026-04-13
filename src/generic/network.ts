@@ -15,7 +15,6 @@ export class AnimaceInterceptor extends PaperbackInterceptor {
 
   override async interceptRequest(request: Request): Promise<Request> {
     request.headers = {
-      ...request.headers,
       referer: `${this.domain}/`,
       origin: this.domain,
       "user-agent": await Application.getDefaultUserAgent(),
@@ -26,6 +25,7 @@ export class AnimaceInterceptor extends PaperbackInterceptor {
       "cache-control": "no-cache",
       pragma: "no-cache",
       "upgrade-insecure-requests": "1",
+      ...request.headers,
     };
 
     return request;

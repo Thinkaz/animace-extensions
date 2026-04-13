@@ -23,7 +23,7 @@ import {
 } from "@paperback/types";
 import { AnimaceInterceptor, fetchRequest } from "./network";
 import { AnimaceParser } from "./parsers";
-import { AnimaceHelper } from "./utils";
+import { AnimaceHelper, generateChapterToken } from "./utils";
 
 type AnimaceImplementation = Extension &
   DiscoverSectionProviding &
@@ -37,7 +37,6 @@ export interface AnimaceConfig {
   name: string;
   contentRating: ContentRating;
   language: string;
-  excludeImagePatterns?: string[];
   basicRateLimiter?: {
     numberOfRequests: number;
     bufferInterval: number;
@@ -74,7 +73,7 @@ export class AnimaceGeneric implements AnimaceImplementation {
     });
 
     this.helper = new AnimaceHelper(this.domain);
-    this.parser = new AnimaceParser(this.domain, config.excludeImagePatterns);
+    this.parser = new AnimaceParser(this.domain);
   }
 
   async initialise(): Promise<void> {
@@ -87,20 +86,20 @@ export class AnimaceGeneric implements AnimaceImplementation {
     return [
       {
         id: "popular",
-        title: "Popular Lately",
-        subtitle: "Most viewed series",
+        title: "Popular",
+        subtitle: "Most popular series",
         type: DiscoverSectionType.featured,
       },
       {
         id: "latest",
         title: "Latest Updates",
-        subtitle: "Recently updated manga",
+        subtitle: "Recently updated chapters",
         type: DiscoverSectionType.chapterUpdates,
       },
       {
-        id: "weekly",
-        title: "Weekly Recommendations",
-        subtitle: "Staff picks of the week",
+        id: "highscore",
+        title: "Top Rated",
+        subtitle: "Highest rated series",
         type: DiscoverSectionType.simpleCarousel,
       },
     ];
@@ -112,27 +111,29 @@ export class AnimaceGeneric implements AnimaceImplementation {
   ): Promise<PagedResults<DiscoverSectionItem>> {
     const page = metadata ?? 1;
 
-    if (section.id === "weekly") {
+    if (section.id === "highscore") {
       const request: Request = {
-        url: this.domain,
+        url: `${this.domain}/wp-json/manga/v1/highscore?number=15`,
         method: "GET",
       };
-      const html = await fetchRequest(request);
-      return this.parser.parseWeeklyRecommendations(html);
+      const json = await fetchRequest(request);
+      return this.parser.parseHighscoreItems(json);
     } else if (section.id === "latest") {
       const request: Request = {
-        url: `${this.domain}/updated-mangas0/?_paged=${page}`,
-        method: "GET",
+        url: `${this.domain}/wp-json/manga/v1/latest-chapters`,
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ page }),
       };
-      const html = await fetchRequest(request);
-      return this.parser.parseLatestUpdates(html, page);
+      const json = await fetchRequest(request);
+      return this.parser.parseLatestUpdates(json, page);
     } else {
       const request: Request = {
-        url: `${this.domain}/wp-content/themes/animacewp/most_viewed_series.json`,
+        url: `${this.domain}/wp-json/manga/v1/popular?number=15`,
         method: "GET",
       };
-      const jsonStr = await fetchRequest(request);
-      return this.parser.parsePopularItems(jsonStr, section.type);
+      const json = await fetchRequest(request);
+      return this.parser.parsePopularItems(json, section.type);
     }
   }
 
@@ -145,19 +146,20 @@ export class AnimaceGeneric implements AnimaceImplementation {
       return { items: [] };
     }
 
-    const searchQuery = encodeURIComponent(query.title.trim());
-    const request = {
-      url: `${this.domain}/?s=${searchQuery}&asp_active=1&p_asid=1&p_asp_data=1&asp_gen[]=title&asp_gen[]=exact`,
-      method: "GET" as const,
+    const request: Request = {
+      url: `${this.domain}/wp-json/manga/v1/search`,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: query.title.trim() }),
     };
 
-    const html = await fetchRequest(request);
-    return this.parser.parseSearchResults(html);
+    const json = await fetchRequest(request);
+    return this.parser.parseSearchResults(json);
   }
 
   async getMangaDetails(mangaId: string): Promise<SourceManga> {
     const request: Request = {
-      url: `${this.domain}/manga/${mangaId}`,
+      url: `${this.domain}/manga/${mangaId}/`,
       method: "GET",
     };
 
@@ -168,25 +170,42 @@ export class AnimaceGeneric implements AnimaceImplementation {
   async getChapters(sourceManga: SourceManga, sinceDate?: Date): Promise<Chapter[]> {
     void sinceDate;
 
+    // First fetch the manga page to get the numeric manga ID
+    const pageRequest: Request = {
+      url: `${this.domain}/manga/${sourceManga.mangaId}/`,
+      method: "GET",
+    };
+    const html = await fetchRequest(pageRequest);
+    const numericId = this.parser.extractMangaNumericId(html);
+
+    if (!numericId) {
+      throw new Error(`Could not find numeric manga ID for ${sourceManga.mangaId}`);
+    }
+
+    // Generate auth token for chapter API
+    const { token, timestamp } = generateChapterToken();
+
+    const queryString =
+      `manga_id=${numericId}&offset=0&limit=500&order=DESC` +
+      `&_t=${token}&_ts=${timestamp}`;
+
     const request: Request = {
-      url: `${this.domain}/manga/${sourceManga.mangaId}/chapterlist/`,
+      url: `${this.domain}/auth/manga-chapters?${queryString}`,
       method: "GET",
     };
 
-    const html = await fetchRequest(request);
-    return this.parser.parseChapters(html, sourceManga);
+    const json = await fetchRequest(request);
+    return this.parser.parseChapters(json, sourceManga);
   }
 
   async getChapterDetails(chapter: Chapter): Promise<ChapterDetails> {
-    const chapterUrl = `${this.domain}/manga/${chapter.sourceManga.mangaId}/chapter-${chapter.chapterId}`;
-
     const request: Request = {
-      url: chapterUrl,
+      url: `${this.domain}/auth/chapter-content?chapter_id=${chapter.chapterId}`,
       method: "GET",
     };
 
-    const html = await fetchRequest(request);
-    return this.parser.parseChapterDetails(html, chapter.chapterId, chapter.sourceManga.mangaId);
+    const json = await fetchRequest(request);
+    return this.parser.parseChapterDetails(json, chapter.chapterId, chapter.sourceManga.mangaId);
   }
 
   async saveCloudflareBypassCookies(cookies: Cookie[]): Promise<void> {
